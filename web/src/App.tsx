@@ -37,9 +37,23 @@ export function App({ initial }: { initial: Tree }) {
     location.hash = formatRoute(ref);
   }, []);
 
+  const select = useCallback(
+    (ref: Ref | null) => {
+      if (ref) return open(ref);
+      history.pushState(null, "", location.pathname);
+      setSelected(null);
+      api.setLast(null).catch(() => {});
+    },
+    [open],
+  );
+
+  useEffect(() => {
+    document.title = name === undefined ? "multi-excalidraw" : `${name} · multi-excalidraw`;
+  }, [name]);
+
   return (
     <div className="shell">
-      <Sidebar tree={tree} selected={selected} onTree={setTree} onOpen={open} />
+      <Sidebar tree={tree} selected={selected} onTree={setTree} onOpen={open} onSelect={select} />
       {selected ? (
         <main className="main main-editor">
           <Suspense fallback={<Skeleton board={selected} />}>
