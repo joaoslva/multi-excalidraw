@@ -17,4 +17,4 @@ Open http://localhost:8411. The port is published on loopback only.
 
 ## Status
 
-Under construction. The Dockerfile and the app do not exist yet.
+Under construction. The server and the Docker image work and are covered by tests: boards can be created, saved, moved and trashed over the HTTP API, and the sidebar data is inlined into the page. The web UI is not built yet, so the page is a placeholder.
