@@ -120,6 +120,22 @@ export const api = {
     return revOf(res);
   },
 
+  async moveBoard(from: Ref, to: Ref): Promise<void> {
+    await request("PATCH", "/api/board", { group: from.group, name: from.name }, { body: JSON.stringify({ group: to.group, name: to.name }) });
+  },
+
+  async deleteBoard(ref: Ref): Promise<void> {
+    await request("DELETE", "/api/board", { group: ref.group, name: ref.name });
+  },
+
+  async renameGroup(from: string, to: string): Promise<void> {
+    await request("PATCH", "/api/group", { name: from }, { body: JSON.stringify({ name: to }) });
+  },
+
+  async deleteGroup(name: string): Promise<void> {
+    await request("DELETE", "/api/group", { name });
+  },
+
   async setLast(ref: Ref | null): Promise<void> {
     await request("PUT", "/api/last", {}, { body: JSON.stringify(ref) });
   },

@@ -13,6 +13,64 @@ const lastCall = () => {
   return { url, init };
 };
 
+describe("api moves and deletes", () => {
+  const ok = () => fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+
+  it("moveBoard PATCHes the old address with the new one as JSON", async () => {
+    ok();
+    await api.moveBoard({ group: "a b", name: "x/y" }, { group: "", name: "z" });
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/board?group=a+b&name=x%2Fy");
+    expect(init.method).toBe("PATCH");
+    expect(init.headers).toEqual({ "X-MX": "1", "Content-Type": "application/json" });
+    expect(init.body).toBe('{"group":"","name":"z"}');
+  });
+
+  it("deleteBoard sends DELETE with X-MX only", async () => {
+    ok();
+    await api.deleteBoard({ group: "", name: "n&m" });
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/board?group=&name=n%26m");
+    expect(init.method).toBe("DELETE");
+    expect(init.headers).toEqual({ "X-MX": "1" });
+    expect(init.body).toBeUndefined();
+  });
+
+  it("renameGroup PATCHes the group with the new name as JSON", async () => {
+    ok();
+    await api.renameGroup("old g", "new");
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/group?name=old+g");
+    expect(init.method).toBe("PATCH");
+    expect(init.headers).toEqual({ "X-MX": "1", "Content-Type": "application/json" });
+    expect(init.body).toBe('{"name":"new"}');
+  });
+
+  it("deleteGroup sends DELETE with X-MX only", async () => {
+    ok();
+    await api.deleteGroup("g");
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/group?name=g");
+    expect(init.method).toBe("DELETE");
+    expect(init.headers).toEqual({ "X-MX": "1" });
+  });
+
+  it("maps 409 to Conflict on every call", async () => {
+    const calls = [
+      () => api.moveBoard({ group: "", name: "a" }, { group: "g", name: "a" }),
+      () => api.deleteBoard({ group: "", name: "a" }),
+      () => api.renameGroup("a", "b"),
+      () => api.deleteGroup("a"),
+    ];
+    for (const c of calls) {
+      fetchMock.mockResolvedValueOnce(new Response("already exists", { status: 409 }));
+      const e = await c().catch((x) => x);
+      expect(e).toBeInstanceOf(Conflict);
+      expect(e).toMatchObject({ status: 409, message: "already exists" });
+    }
+  });
+});
+
 describe("api writes", () => {
   it("createGroup sends PUT with X-MX and JSON content type", async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }));

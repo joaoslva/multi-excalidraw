@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Conflict } from "./api";
+import { ApiError, Conflict } from "./api";
 import { createAutosave, type SaveStatus } from "./autosave";
 
 beforeEach(() => vi.useFakeTimers());
@@ -213,5 +213,20 @@ describe("autosave", () => {
     a.push(snap("A"), 1);
     await vi.advanceTimersByTimeAsync(800);
     expect(seen).toEqual(["dirty", "saving", "saved"]);
+  });
+
+  it("goes gone on a 404 save: one call, no retries, later pushes ignored, flush resolves", async () => {
+    const save = vi.fn().mockRejectedValue(new ApiError(404, "not found"));
+    const a = createAutosave({ save, rev: "r1", version: 0 });
+    a.push(snap("A"), 1);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(a.status()).toEqual({ kind: "gone" });
+    await vi.advanceTimersByTimeAsync(120_000);
+    a.push(snap("B"), 2);
+    await vi.advanceTimersByTimeAsync(120_000);
+    await a.flush();
+    await a.overwrite();
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(a.status()).toEqual({ kind: "gone" });
   });
 });

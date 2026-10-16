@@ -1,4 +1,4 @@
-import { Conflict } from "./api";
+import { ApiError, Conflict } from "./api";
 
 export type SaveStatus =
   | { kind: "saved" }
@@ -6,6 +6,8 @@ export type SaveStatus =
   | { kind: "saving" }
   /** current is the server's rev, which overwrite() saves against. */
   | { kind: "conflict"; current: string | null }
+  /** The board was moved or deleted under us (404 on save); nothing more will be sent. */
+  | { kind: "gone" }
   | { kind: "error"; message: string; attempt: number; retryInMs: number };
 
 export interface AutosaveOptions {
@@ -54,7 +56,7 @@ export function createAutosave(o: AutosaveOptions): Autosave {
     current = s;
     for (const l of listeners) l();
   };
-  const stopped = () => current.kind === "conflict" || current.kind === "error";
+  const stopped = () => current.kind === "conflict" || current.kind === "error" || current.kind === "gone";
 
   const clearTimers = () => {
     for (const t of [debounce, maxWait, retry]) if (t) clearTimeout(t);
@@ -96,6 +98,11 @@ export function createAutosave(o: AutosaveOptions): Autosave {
       if (e instanceof Conflict && e.status === 412) {
         clearTimers();
         set({ kind: "conflict", current: e.current });
+        return;
+      }
+      if (e instanceof ApiError && e.status === 404) {
+        clearTimers();
+        set({ kind: "gone" });
         return;
       }
       failures++;

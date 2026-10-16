@@ -3,6 +3,7 @@ import "@excalidraw/excalidraw/index.css";
 import type { ExcalidrawInitialDataState } from "@excalidraw/excalidraw/types";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { api, ApiError } from "./api";
+import { clearActive, setActive } from "./active";
 import { createAutosave, type Autosave, type SaveStatus } from "./autosave";
 import type { Ref } from "./types";
 
@@ -44,12 +45,14 @@ function Board({ board, reload }: { board: Ref; reload: () => void }) {
       (l) => {
         if (!live) return;
         autosave = createAutosave({ save: (json, rev) => api.saveBoard({ group, name }, json, rev), rev: l.rev, version: l.version });
+        setActive(autosave);
         setLoad({ kind: "ready", autosave });
       },
       (e) => live && setLoad({ kind: "failed", message: describe(e) }),
     );
     return () => {
       live = false;
+      if (autosave) clearActive(autosave);
       // A save still failing keeps retrying in the background after a board switch; nothing else is left scheduled.
       void autosave?.flush();
     };
@@ -106,6 +109,7 @@ const LABELS: Record<SaveStatus["kind"], string> = {
   dirty: "Unsaved",
   conflict: "Conflict",
   error: "Save failed",
+  gone: "Board missing",
 };
 
 function SaveState({ autosave, reload }: { autosave: Autosave; reload: () => void }) {
@@ -120,6 +124,11 @@ function SaveState({ autosave, reload }: { autosave: Autosave; reload: () => voi
           <span>This board changed elsewhere.</span>
           <button type="button" onClick={reload}>Load theirs</button>
           <button type="button" onClick={() => void autosave.overwrite()}>Overwrite</button>
+        </div>
+      )}
+      {status.kind === "gone" && (
+        <div className="conflict-banner" role="alert">
+          <span>This board was moved or deleted.</span>
         </div>
       )}
     </>
