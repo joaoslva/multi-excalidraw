@@ -37,6 +37,8 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/web":/app -w /a
 
 `scripts/verify.sh` builds the image, runs it on a throwaway data folder, and drives it with a headless Chrome container: cold and warm load times, a check that no request leaves the machine, then creating a group and a board, drawing, reloading, and forcing a conflict. Set `SHOT_DIR` to a folder to get screenshots of failures.
 
+`scripts/measure-board.sh <board.excalidraw>` compares ways of showing a board to an AI agent: it renders the board to images, writes a text outline (`scripts/board-outline.mjs`), and prints the size of each next to the raw file. The outline code is a prototype with its own tests (`docker run --rm -v "$PWD/scripts":/s:ro -w /s node:22-alpine node --test`).
+
 `npm run build` fails when the JavaScript needed for first paint goes over 80 KB gzipped, or when the editor chunk leaks into it. That is what keeps the sidebar fast.
 
 Excalidraw is pinned to an exact version and its fonts are copied into the image, so nothing is fetched from a CDN at runtime.

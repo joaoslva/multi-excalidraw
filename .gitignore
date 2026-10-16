@@ -3,3 +3,4 @@ dist/
 server/web/assets/
 .claude/settings.local.json
 .env
+measure-out/
