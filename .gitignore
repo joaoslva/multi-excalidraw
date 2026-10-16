@@ -1,0 +1,5 @@
+node_modules/
+dist/
+server/web/
+.claude/settings.local.json
+.env
