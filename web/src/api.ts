@@ -12,10 +12,23 @@ export class ApiError extends Error {
 
 /** 409 (already exists) and 412 (stale revision). */
 export class Conflict extends ApiError {
-  constructor(status: number, message: string) {
+  constructor(
+    status: number,
+    message: string,
+    /** The server's rev on a 412; null on a 409. */
+    readonly current: string | null = null,
+  ) {
     super(status, message);
     this.name = "Conflict";
   }
+}
+
+const unquote = (etag: string | null) => (etag === null ? null : etag.replace(/^"|"$/g, ""));
+
+function revOf(res: Response): string {
+  const rev = unquote(res.headers.get("ETag"));
+  if (!rev) throw new ApiError(res.status, "response has no ETag");
+  return rev;
 }
 
 const EMPTY_SCENE = JSON.stringify({
@@ -77,7 +90,8 @@ async function request(method: string, path: string, query: Record<string, strin
   const res = await fetch(qs ? `${path}?${qs}` : path, { method, headers, body: init.body });
   if (res.ok) return res;
   const text = (await res.text().catch(() => "")).trim() || res.statusText || `HTTP ${res.status}`;
-  throw res.status === 409 || res.status === 412 ? new Conflict(res.status, text) : new ApiError(res.status, text);
+  if (res.status === 412) throw new Conflict(412, text, unquote(res.headers.get("ETag")));
+  throw res.status === 409 ? new Conflict(409, text) : new ApiError(res.status, text);
 }
 
 export const api = {
@@ -91,7 +105,19 @@ export const api = {
   },
 
   async createBoard(ref: Ref): Promise<void> {
-    await request("PUT", "/api/board", { group: ref.group, name: ref.name }, { headers: { "If-None-Match": "*" }, body: EMPTY_SCENE });
+    await api.saveBoard(ref, EMPTY_SCENE, "new");
+  },
+
+  async getBoard(ref: Ref): Promise<{ json: string; rev: string }> {
+    const res = await request("GET", "/api/board", { group: ref.group, name: ref.name });
+    return { json: await res.text(), rev: revOf(res) };
+  },
+
+  /** rev "new" creates the board and fails with Conflict 409 if it exists. */
+  async saveBoard(ref: Ref, json: string, rev: string | "new"): Promise<string> {
+    const headers: Record<string, string> = rev === "new" ? { "If-None-Match": "*" } : { "If-Match": `"${rev}"` };
+    const res = await request("PUT", "/api/board", { group: ref.group, name: ref.name }, { headers, body: json });
+    return revOf(res);
   },
 
   async setLast(ref: Ref | null): Promise<void> {

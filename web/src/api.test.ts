@@ -25,7 +25,7 @@ describe("api writes", () => {
   });
 
   it("createBoard sends If-None-Match and an empty scene", async () => {
-    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    fetchMock.mockResolvedValue(new Response(null, { status: 204, headers: { ETag: '"r0"' } }));
     await api.createBoard({ group: "", name: "a/b" });
     const { url, init } = lastCall();
     expect(url).toBe("/api/board?group=&name=a%2Fb");
@@ -53,6 +53,43 @@ describe("api writes", () => {
     expect(e412.status).toBe(412);
   });
 
+  it("maps 412 to Conflict carrying the server's current rev, and 409 to none", async () => {
+    fetchMock.mockResolvedValueOnce(new Response("revision conflict", { status: 412, headers: { ETag: '"9-42"' } }));
+    const e412 = await api.saveBoard({ group: "g", name: "n" }, "{}", "1-1").catch((e) => e);
+    expect(e412).toBeInstanceOf(Conflict);
+    expect(e412.current).toBe("9-42");
+
+    fetchMock.mockResolvedValueOnce(new Response("already exists", { status: 409 }));
+    const e409 = await api.saveBoard({ group: "g", name: "n" }, "{}", "new").catch((e) => e);
+    expect(e409).toBeInstanceOf(Conflict);
+    expect(e409.current).toBeNull();
+  });
+
+  it("saveBoard with a rev sends a quoted If-Match and returns the new rev", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204, headers: { ETag: '"200-7"' } }));
+    expect(await api.saveBoard({ group: "g h", name: "a&b" }, '{"type":"excalidraw"}', "100-5")).toBe("200-7");
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/board?group=g+h&name=a%26b");
+    expect(init.method).toBe("PUT");
+    expect(init.headers).toEqual({ "If-Match": '"100-5"', "X-MX": "1", "Content-Type": "application/json" });
+    expect(init.body).toBe('{"type":"excalidraw"}');
+  });
+
+  it("saveBoard rejects a success response that carries no ETag", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    const err = await api.saveBoard({ group: "g", name: "n" }, "{}", "1-1").catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.message).toBe("response has no ETag");
+  });
+
+  it("saveBoard with new sends If-None-Match: *", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204, headers: { ETag: '"1-2"' } }));
+    expect(await api.saveBoard({ group: "", name: "n" }, "{}", "new")).toBe("1-2");
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/board?group=&name=n");
+    expect(init.headers).toEqual({ "If-None-Match": "*", "X-MX": "1", "Content-Type": "application/json" });
+  });
+
   it("maps other failures to a plain ApiError", async () => {
     fetchMock.mockResolvedValue(new Response("invalid name", { status: 400 }));
     const e = await api.createGroup("..").catch((e) => e);
@@ -69,6 +106,17 @@ describe("api writes", () => {
     fetchMock.mockClear();
     await api.setLast(null);
     expect(lastCall().init.body).toBe("null");
+  });
+});
+
+describe("api.getBoard", () => {
+  it("GETs the board with the preload's exact URL and trims the ETag quotes", async () => {
+    fetchMock.mockResolvedValue(new Response('{"type":"excalidraw"}', { status: 200, headers: { ETag: '"123-45"' } }));
+    expect(await api.getBoard({ group: "", name: "a/b c" })).toEqual({ json: '{"type":"excalidraw"}', rev: "123-45" });
+    const { url, init } = lastCall();
+    expect(url).toBe("/api/board?group=&name=a%2Fb+c");
+    expect(init.method).toBe("GET");
+    expect(init.headers).toEqual({});
   });
 });
 

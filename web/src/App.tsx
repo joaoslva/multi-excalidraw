@@ -1,12 +1,20 @@
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { formatRoute, parseRoute } from "./route";
 import { Sidebar } from "./Sidebar";
 import type { Ref, Tree } from "./types";
 
+const loadEditor = () => import("./Editor");
+const Editor = lazy(loadEditor);
+
 export function App({ initial }: { initial: Tree }) {
   const [tree, setTree] = useState(initial);
-  const [selected, setSelected] = useState<Ref | null>(() => parseRoute(location.hash) ?? (location.hash ? null : initial.last));
+  const [selected, setSelected] = useState<Ref | null>(() => {
+    const ref = parseRoute(location.hash) ?? (location.hash ? null : initial.last);
+    // Start the chunk download now so it overlaps the scene fetch the server preloaded.
+    if (ref) void loadEditor();
+    return ref;
+  });
 
   useEffect(() => {
     const onHash = () => setSelected(parseRoute(location.hash));
@@ -32,17 +40,26 @@ export function App({ initial }: { initial: Tree }) {
   return (
     <div className="shell">
       <Sidebar tree={tree} selected={selected} onTree={setTree} onOpen={open} />
-      <main className="main">
-        {selected ? (
-          <section className="card">
-            <h1>{selected.name}</h1>
-            <p className="muted">{selected.group || "Ungrouped"}</p>
-            <p>The editor arrives in the next step.</p>
-          </section>
-        ) : (
+      {selected ? (
+        <main className="main main-editor">
+          <Suspense fallback={<Skeleton board={selected} />}>
+            <Editor key={`${selected.group}/${selected.name}`} board={selected} />
+          </Suspense>
+        </main>
+      ) : (
+        <main className="main">
           <p className="empty">Select a board, or create one in the sidebar.</p>
-        )}
-      </main>
+        </main>
+      )}
+    </div>
+  );
+}
+
+function Skeleton({ board }: { board: Ref }) {
+  return (
+    <div className="editor-skeleton" aria-busy="true">
+      <h1>{board.name}</h1>
+      <p className="muted">{board.group || "Ungrouped"} · Loading editor…</p>
     </div>
   );
 }
