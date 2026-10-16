@@ -14,7 +14,8 @@ const scene = `{"type":"excalidraw","version":2,"elements":[]}`
 var webFS = fstest.MapFS{
 	"index.html":    {Data: []byte("<html><head><!--MX_BOOT--></head><body>app</body></html>")},
 	"assets/app.js": {Data: []byte("console.log(1)")},
-	"favicon.svg":   {Data: []byte("<svg/>")},
+	"excalidraw/fonts/Virgil/Virgil-abc.woff2": {Data: []byte("wOF2")},
+	"favicon.svg": {Data: []byte("<svg/>")},
 }
 
 func newTestHandler(t *testing.T) http.Handler {
@@ -283,4 +284,16 @@ func TestStaticFiles(t *testing.T) {
 	wantStatus(t, do(h, "GET", "/index.html", ""), 404)
 	wantStatus(t, do(h, "GET", "/assets/missing.js", ""), 404)
 	wantStatus(t, do(h, "GET", "/assets/", ""), 404)
+}
+
+func TestFontFiles(t *testing.T) {
+	h := newTestHandler(t)
+	w := do(h, "GET", "/excalidraw/fonts/Virgil/Virgil-abc.woff2", "")
+	wantStatus(t, w, 200)
+	if got := w.Header().Get("Content-Type"); got != "font/woff2" {
+		t.Errorf("Content-Type = %q", got)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Errorf("Cache-Control = %q", got)
+	}
 }

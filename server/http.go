@@ -65,6 +65,13 @@ func toWireTree(t Tree) wireTree {
 	return w
 }
 
+// The scratch image has no /etc/mime.types, so the font types must be registered by hand.
+func init() {
+	for ext, typ := range map[string]string{".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf"} {
+		mime.AddExtensionType(ext, typ)
+	}
+}
+
 type server struct {
 	store *Store
 	web   fs.FS
@@ -377,7 +384,7 @@ func (s *server) file(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if strings.HasPrefix(name, "assets/") {
+	if strings.HasPrefix(name, "assets/") || strings.HasPrefix(name, "excalidraw/fonts/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}
 	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
