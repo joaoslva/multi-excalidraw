@@ -199,6 +199,84 @@ for (let i = 0; i < 40 && !overwritten; i++) {
 check("Overwrite saves the page's version", !!overwritten && liveElements(overwritten) === 2, overwritten ? `${liveElements(overwritten)} elements` : "no write");
 check("the banner goes away", !!(await waitFor(`!/changed elsewhere/i.test(document.body.innerText)`, 5000)));
 
+// 4. Rename, move and delete from the sidebar, with unsaved edits in the open board.
+const hashIs = (h) => evaluate(`decodeURIComponent(location.hash) === ${JSON.stringify(h)}`);
+const openActions = (label) => evaluate(`(() => { const b = document.querySelector('button[aria-label=${JSON.stringify(label)}]'); if (!b) return false; b.click(); return true; })()`);
+const renameVia = async (actionsLabel, to) => {
+  if (!(await openActions(actionsLabel))) return false;
+  if (!(await clickText("button", "Rename"))) return false;
+  if (!(await waitFor(`!!document.querySelector('input[aria-label="Rename to"]')`, 3000))) return false;
+  await evaluate(`document.querySelector('input[aria-label="Rename to"]').select()`);
+  await typeAndEnter(to);
+  return true;
+};
+const moveVia = async (actionsLabel, groupText) => {
+  if (!(await openActions(actionsLabel))) return false;
+  if (!(await clickText("button", "Move…"))) return false;
+  const picked = await waitFor(
+    `(() => { const sel = document.querySelector('select[aria-label="Move to group"]'); if (!sel) return false; const o = [...sel.options].find((o) => o.textContent.trim() === ${JSON.stringify(groupText)}); if (!o) return false; const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set; set.call(sel, o.value); sel.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`,
+    3000,
+  );
+  return !!picked && (await clickText("button", "Move"));
+};
+const boardJson = async (group, name) => {
+  const res = await api("GET", `/api/board?${new URLSearchParams({ group, name })}`);
+  return res.status === 200 ? { scene: JSON.parse(res.text) } : { status: res.status };
+};
+const live = (b) => (b.scene ? b.scene.elements.filter((e) => !e.isDeleted).length : -1);
+const treeNow = async () => JSON.parse((await api("GET", "/api/tree")).text);
+
+await drawRectangle(450, 500);
+check("rename the open board with an unsaved stroke", await renameVia("Actions for Plan", "Plan v2"));
+check("the route follows the rename", !!(await waitFor(`decodeURIComponent(location.hash) === "#/b/Work/Plan v2"`, 8000)));
+const renamed = await boardJson("Work", "Plan v2");
+check("the unsaved stroke reached the renamed file", live(renamed) === 3, `${live(renamed)} elements`);
+check("the old name is gone", (await boardJson("Work", "Plan")).status === 404);
+check("the editor reopens the renamed board", !!(await waitFor(`!!document.querySelector(".excalidraw canvas")`, 10000)));
+
+await drawRectangle(500, 560);
+check("move the open board to Ungrouped with an unsaved stroke", await moveVia("Actions for Plan v2", "Ungrouped"));
+check("the route follows the move", !!(await waitFor(`decodeURIComponent(location.hash) === "#/b//Plan v2"`, 8000)));
+const moved = await boardJson("", "Plan v2");
+check("the unsaved stroke reached the moved file", live(moved) === 4, `${live(moved)} elements`);
+check("the source is gone after the move", (await boardJson("Work", "Plan v2")).status === 404);
+
+check("move it back into Work", await moveVia("Actions for Plan v2", "Work"));
+check("route back in Work", !!(await waitFor(`decodeURIComponent(location.hash) === "#/b/Work/Plan v2"`, 8000)));
+await waitFor(`!!document.querySelector(".excalidraw canvas")`, 10000);
+check("rename the open board's group", await renameVia("Actions for group Work", "Work2"));
+check("the route follows the group rename", !!(await waitFor(`decodeURIComponent(location.hash) === "#/b/Work2/Plan v2"`, 8000)));
+check("the board is under the renamed group", live(await boardJson("Work2", "Plan v2")) === 4);
+
+await api("PUT", "/api/board?" + new URLSearchParams({ name: "A1" }), { headers: { "If-None-Match": "*" }, body: JSON.stringify(seed) });
+await api("PUT", "/api/board?" + new URLSearchParams({ name: "A2" }), { headers: { "If-None-Match": "*" }, body: JSON.stringify(seed) });
+await send("Page.reload");
+await waitFor(`!!document.querySelector('button[aria-label="Actions for A1"]')`, 10000);
+check("rename onto an existing name is refused", await renameVia("Actions for A1", "A2"));
+check("the refusal is shown", !!(await waitFor(`/already exists/i.test(document.querySelector('[role="alert"]')?.textContent ?? "")`, 5000)));
+check("the other board is untouched", (await boardJson("", "A1")).scene !== undefined && (await boardJson("", "A2")).scene !== undefined);
+await evaluate(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
+
+check("delete the open board", await (async () => {
+  if (!(await waitFor(`!!document.querySelector('button[aria-label="Actions for Plan v2"]')`, 5000))) return false;
+  await openActions("Actions for Plan v2");
+  return (await clickText("button", "Delete…")) && !!(await waitFor(`!![...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Delete board")`, 3000)) && (await clickText("button", "Delete board"));
+})());
+check("the selection clears", !!(await waitFor(`!document.querySelector(".excalidraw canvas") && decodeURIComponent(location.hash) === ""`, 8000)));
+check("the board is gone from the server", (await boardJson("Work2", "Plan v2")).status === 404);
+check("the tab title resets", !!(await waitFor(`document.title === "multi-excalidraw"`, 3000)));
+check("the sidebar no longer lists it", !JSON.stringify(await treeNow()).includes("Plan v2"));
+
+await api("PUT", "/api/group?name=Doomed");
+await api("PUT", "/api/board?" + new URLSearchParams({ group: "Doomed", name: "Inside" }), { headers: { "If-None-Match": "*" }, body: JSON.stringify(seed) });
+await goto(BASE + "/");
+await waitFor(`!!document.querySelector('button[aria-label="Actions for group Doomed"]')`);
+check("delete a group", await (async () => {
+  await openActions("Actions for group Doomed");
+  return (await clickText("button", "Delete…")) && !!(await waitFor(`!![...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Delete group")`, 3000)) && (await clickText("button", "Delete group"));
+})());
+check("the group and its board are gone", !!(await waitFor(`!document.querySelector('button[aria-label="Actions for group Doomed"]')`, 5000)) && (await boardJson("Doomed", "Inside")).status === 404);
+
 ws.close();
 const failed = results.filter((r) => !r.ok);
 console.log(failed.length ? `\n${failed.length} of ${results.length} checks FAILED` : `\nall ${results.length} checks passed`);

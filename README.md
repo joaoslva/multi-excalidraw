@@ -17,9 +17,14 @@ Open http://localhost:8411. The port is published on loopback only.
 
 ## Status
 
-The app works end to end. Boards are grouped in a sidebar, open in the Excalidraw editor, and autosave to the data folder. A change made to the file elsewhere (an editor, git) is detected on the next save and offered as a choice instead of being overwritten.
+Feature complete for what it set out to be. Boards are grouped in a sidebar, open in the Excalidraw editor, and autosave to the data folder. Each board and group has a ⋯ menu to rename, move (boards) and delete. A change made to a file elsewhere (an editor, git) is detected on the next save and offered as a choice instead of being overwritten.
 
-Not built yet: renaming, moving and deleting boards and groups from the UI. The API and the store support them.
+## Your data
+
+- A board is `<data folder>/<group>/<name>.excalidraw`, or `<data folder>/<name>.excalidraw` when it has no group. They are standard Excalidraw files.
+- Deleting a board or a group moves it into `<data folder>/.trash/` with a timestamp. Nothing is deleted for good; to undo, move the file back.
+- Renaming or moving the board you have open saves your latest strokes first, and refuses (with a message) if the open board has a save problem.
+- Zoom and scroll position are saved with the next drawing change, not on their own.
 
 ## Develop
 
