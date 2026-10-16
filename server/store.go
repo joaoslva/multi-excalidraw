@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ type Name struct{ s string }
 
 func (n Name) String() string { return n.s }
 
+func (n Name) MarshalText() ([]byte, error) { return []byte(n.s), nil }
+
 func ParseName(s string) (Name, error) {
 	bad := func(why string) (Name, error) { return Name{}, fmt.Errorf("%w: %s", ErrInvalid, why) }
 	switch {
@@ -50,6 +53,21 @@ func ParseName(s string) (Name, error) {
 		return bad("forbidden character")
 	}
 	return Name{s}, nil
+}
+
+// ParseRef is the one place an empty group becomes Ungrouped.
+func ParseRef(group, name string) (BoardRef, error) {
+	n, err := ParseName(name)
+	if err != nil {
+		return BoardRef{}, err
+	}
+	r := BoardRef{Name: n}
+	if group != "" {
+		if r.Group, err = ParseName(group); err != nil {
+			return BoardRef{}, err
+		}
+	}
+	return r, nil
 }
 
 // Rev is "<mtimeNanos>-<size>", derived from the file and never stored.
@@ -101,53 +119,57 @@ func Open(root string) (*Store, error) {
 	return s, nil
 }
 
-func fold(a, b string) bool { return strings.EqualFold(a, b) }
-
-// find returns the on-disk entry name matching name case-insensitively, or "".
-func find(dir, name string, isDir bool) (string, error) {
+// lookup returns the on-disk spelling of name in dir (case-insensitive) when
+// present, else dir/name.
+func lookup(dir, name string, isDir bool) (path string, exists bool, err error) {
 	es, err := os.ReadDir(dir)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	for _, e := range es {
-		if e.IsDir() == isDir && fold(e.Name(), name) {
-			return e.Name(), nil
+		if e.IsDir() == isDir && strings.EqualFold(e.Name(), name) {
+			return filepath.Join(dir, e.Name()), true, nil
 		}
 	}
-	return "", nil
+	return filepath.Join(dir, name), false, nil
 }
 
-func (s *Store) groupDir(g Name) (string, error) {
+// group resolves g; the empty group is the root.
+func (s *Store) group(g Name) (string, error) {
 	if g.s == "" {
 		return s.root, nil
 	}
-	n, err := find(s.root, g.s, true)
-	if err != nil {
-		return "", err
+	p, ok, err := lookup(s.root, g.s, true)
+	if err == nil && !ok {
+		err = ErrNotFound
 	}
-	if n == "" {
-		return "", ErrNotFound
-	}
-	return filepath.Join(s.root, n), nil
+	return p, err
 }
 
-// boardPath resolves b; exists is false when no case-insensitive match is on disk.
-func (s *Store) boardPath(b BoardRef) (path string, exists bool, err error) {
+// board resolves b; exists is false when no case-insensitive match is on disk.
+func (s *Store) board(b BoardRef) (path string, exists bool, err error) {
 	if b.Name.s == "" {
 		return "", false, ErrInvalid
 	}
-	dir, err := s.groupDir(b.Group)
+	dir, err := s.group(b.Group)
 	if err != nil {
 		return "", false, err
 	}
-	n, err := find(dir, b.Name.s+ext, false)
-	if err != nil {
-		return "", false, err
+	return lookup(dir, b.Name.s+ext, false)
+}
+
+func (s *Store) existing(b BoardRef) (string, error) {
+	p, ok, err := s.board(b)
+	if err == nil && !ok {
+		err = ErrNotFound
 	}
-	if n == "" {
-		return filepath.Join(dir, b.Name.s+ext), false, nil
-	}
-	return filepath.Join(dir, n), true, nil
+	return p, err
+}
+
+func sortByName[T any](xs []T, name func(T) Name) {
+	slices.SortFunc(xs, func(a, b T) int {
+		return strings.Compare(strings.ToLower(name(a).s), strings.ToLower(name(b).s))
+	})
 }
 
 func revOf(fi os.FileInfo) Rev { return Rev(fmt.Sprintf("%d-%d", fi.ModTime().UnixNano(), fi.Size())) }
@@ -168,7 +190,7 @@ func (s *Store) boards(dir string) ([]Board, error) {
 			out = append(out, Board{n, revOf(fi)})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name.s) < strings.ToLower(out[j].Name.s) })
+	sortByName(out, func(b Board) Name { return b.Name })
 	return out, nil
 }
 
@@ -191,14 +213,12 @@ func (s *Store) Tree() (Tree, error) {
 		}
 		t.Groups = append(t.Groups, Group{n, bs})
 	}
-	sort.Slice(t.Groups, func(i, j int) bool {
-		return strings.ToLower(t.Groups[i].Name.s) < strings.ToLower(t.Groups[j].Name.s)
-	})
+	sortByName(t.Groups, func(g Group) Name { return g.Name })
 	if t.Ungrouped, err = s.boards(s.root); err != nil {
 		return t, err
 	}
 	if l := s.last(); l != nil {
-		if _, ok, err := s.boardPath(*l); err == nil && ok {
+		if _, ok, err := s.board(*l); err == nil && ok {
 			t.Last = l
 		}
 	}
@@ -208,26 +228,24 @@ func (s *Store) Tree() (Tree, error) {
 func (s *Store) Read(b BoardRef) ([]byte, Rev, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, ok, err := s.boardPath(b)
-	if err != nil || !ok {
-		return nil, "", orNotFound(err)
-	}
-	data, err := os.ReadFile(p)
+	p, err := s.existing(b)
 	if err != nil {
 		return nil, "", err
 	}
-	fi, err := os.Stat(p)
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, "", err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, "", err
+	}
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, "", err
 	}
 	return data, revOf(fi), nil
-}
-
-func orNotFound(err error) error {
-	if err == nil {
-		return ErrNotFound
-	}
-	return err
 }
 
 // Write creates the board when ifMatch is "" (failing with ErrExists if present)
@@ -235,7 +253,7 @@ func orNotFound(err error) error {
 func (s *Store) Write(b BoardRef, body []byte, ifMatch Rev) (Rev, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, ok, err := s.boardPath(b)
+	p, ok, err := s.board(b)
 	if err != nil {
 		return "", err
 	}
@@ -267,11 +285,11 @@ func (s *Store) Write(b BoardRef, body []byte, ifMatch Rev) (Rev, error) {
 func (s *Store) Move(from, to BoardRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	src, ok, err := s.boardPath(from)
-	if err != nil || !ok {
-		return orNotFound(err)
+	src, err := s.existing(from)
+	if err != nil {
+		return err
 	}
-	dst, taken, err := s.boardPath(to)
+	dst, taken, err := s.board(to)
 	if err != nil {
 		return err
 	}
@@ -284,9 +302,9 @@ func (s *Store) Move(from, to BoardRef) error {
 func (s *Store) Trash(b BoardRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, ok, err := s.boardPath(b)
-	if err != nil || !ok {
-		return orNotFound(err)
+	p, err := s.existing(b)
+	if err != nil {
+		return err
 	}
 	label := b.Name.s
 	if b.Group.s != "" {
@@ -317,43 +335,45 @@ func (s *Store) CreateGroup(g Name) error {
 	if g.s == "" {
 		return ErrInvalid
 	}
-	if n, err := find(s.root, g.s, true); err != nil || n != "" {
-		if err == nil {
-			err = ErrExists
-		}
+	p, exists, err := lookup(s.root, g.s, true)
+	if err != nil {
 		return err
 	}
-	return os.Mkdir(filepath.Join(s.root, g.s), 0o755)
+	if exists {
+		return ErrExists
+	}
+	return os.Mkdir(p, 0o755)
 }
 
 func (s *Store) RenameGroup(from, to Name) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	src, err := s.groupDir(from)
-	if err != nil || from.s == "" || to.s == "" {
-		return orInvalid(err, from.s == "" || to.s == "")
+	if from.s == "" || to.s == "" {
+		return ErrInvalid
 	}
-	if n, err := find(s.root, to.s, true); err != nil {
+	src, err := s.group(from)
+	if err != nil {
 		return err
-	} else if n != "" && filepath.Join(s.root, n) != src {
+	}
+	dst, exists, err := lookup(s.root, to.s, true)
+	if err != nil {
+		return err
+	}
+	if exists && dst != src {
 		return ErrExists
 	}
 	return os.Rename(src, filepath.Join(s.root, to.s))
 }
 
-func orInvalid(err error, invalid bool) error {
-	if err == nil && invalid {
-		return ErrInvalid
-	}
-	return err
-}
-
 func (s *Store) TrashGroup(g Name) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, err := s.groupDir(g)
-	if err != nil || g.s == "" {
-		return orInvalid(err, g.s == "")
+	if g.s == "" {
+		return ErrInvalid
+	}
+	p, err := s.group(g)
+	if err != nil {
+		return err
 	}
 	return s.toTrash(p, g.s, "")
 }
@@ -369,15 +389,9 @@ func (s *Store) last() *BoardRef {
 	if err != nil || json.Unmarshal(data, &st) != nil || st.Last == nil {
 		return nil
 	}
-	n, err := ParseName(st.Last.Name)
+	ref, err := ParseRef(st.Last.Group, st.Last.Name)
 	if err != nil {
 		return nil
-	}
-	ref := BoardRef{Name: n}
-	if st.Last.Group != "" {
-		if ref.Group, err = ParseName(st.Last.Group); err != nil {
-			return nil
-		}
 	}
 	return &ref
 }

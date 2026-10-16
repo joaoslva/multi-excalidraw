@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,9 +21,10 @@ func name(t *testing.T, s string) Name {
 }
 
 func ref(t *testing.T, g, b string) BoardRef {
-	r := BoardRef{Name: name(t, b)}
-	if g != "" {
-		r.Group = name(t, g)
+	t.Helper()
+	r, err := ParseRef(g, b)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return r
 }
@@ -378,5 +380,70 @@ func TestWrittenFilesAreWorldReadable(t *testing.T) {
 	}
 	if got := fi.Mode().Perm(); got != 0o644 {
 		t.Errorf("mode = %v; want 0644", got)
+	}
+}
+
+func TestParseRef(t *testing.T) {
+	if r, err := ParseRef("", "a"); err != nil || r.Group.s != "" || r.Name.s != "a" {
+		t.Errorf(`ParseRef("", "a") = %+v, %v`, r, err)
+	}
+	if r, err := ParseRef("G", "a"); err != nil || r.Group.s != "G" || r.Name.s != "a" {
+		t.Errorf(`ParseRef("G", "a") = %+v, %v`, r, err)
+	}
+	for _, c := range [][2]string{{"", ""}, {"..", "a"}, {"G", ".x"}} {
+		if _, err := ParseRef(c[0], c[1]); !errors.Is(err, ErrInvalid) {
+			t.Errorf("ParseRef(%q, %q) err = %v; want ErrInvalid", c[0], c[1], err)
+		}
+	}
+}
+
+func TestTreeMarshalsNamesAsStrings(t *testing.T) {
+	tree := Tree{
+		Groups:    []Group{{name(t, "G"), []Board{{name(t, "b"), "1-2"}}}},
+		Ungrouped: []Board{{name(t, "u"), "3-4"}},
+	}
+	data, err := json.Marshal(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Groups []struct {
+			Name   string
+			Boards []struct{ Name string }
+		}
+		Ungrouped []struct{ Name string }
+		Last      *BoardRef
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("%s: %v", data, err)
+	}
+	if len(got.Groups) != 1 || got.Groups[0].Name != "G" || got.Groups[0].Boards[0].Name != "b" || got.Ungrouped[0].Name != "u" || got.Last != nil {
+		t.Errorf("json = %s", data)
+	}
+	if empty, _ := json.Marshal(BoardRef{Name: name(t, "a")}); string(empty) != `{"Group":"","Name":"a"}` {
+		t.Errorf("ungrouped ref = %s", empty)
+	}
+}
+
+func TestRenameGroupCaseOnly(t *testing.T) {
+	s, _ := open(t)
+	if err := s.CreateGroup(name(t, "alpha")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameGroup(name(t, "alpha"), name(t, "Alpha")); err != nil {
+		t.Fatalf("case-only rename: %v", err)
+	}
+	tree, err := s.Tree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Groups) != 1 || tree.Groups[0].Name.String() != "Alpha" {
+		t.Errorf("groups = %v; want [Alpha]", tree.Groups)
+	}
+	if err := s.CreateGroup(name(t, "beta")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameGroup(name(t, "beta"), name(t, "ALPHA")); !errors.Is(err, ErrExists) {
+		t.Errorf("rename onto other group = %v; want ErrExists", err)
 	}
 }
